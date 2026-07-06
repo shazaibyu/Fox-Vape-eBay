@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>eBay Seller Manager</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen">
+  <div class="max-w-7xl mx-auto p-6">
+    <div class="flex items-center justify-between mb-6">
+      <h1 class="text-2xl font-bold">eBay Seller Manager</h1>
+      <span id="conn-status" class="text-sm px-3 py-1 rounded-full bg-gray-300">checking...</span>
+    </div>
+
+    <div class="flex gap-2 mb-6 border-b">
+      <button class="tab-btn px-4 py-2 font-medium" data-tab="orders">Orders & Profit</button>
+      <button class="tab-btn px-4 py-2 font-medium" data-tab="inventory">Inventory</button>
+      <button class="tab-btn px-4 py-2 font-medium" data-tab="messages">Auto Messages</button>
+      <button class="tab-btn px-4 py-2 font-medium" data-tab="settings">Settings</button>
+    </div>
+
+    <!-- ORDERS TAB -->
+    <div id="tab-orders" class="tab-panel">
+      <div class="flex justify-between items-center mb-4">
+        <div class="text-lg">Total profit (visible orders): <span id="total-profit" class="font-bold"></span></div>
+        <button onclick="syncOrders()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">Import Orders from eBay</button>
+      </div>
+      <div class="overflow-x-auto bg-white rounded shadow">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-800 text-white">
+            <tr>
+              <th class="p-2 text-left">Order</th>
+              <th class="p-2 text-left">Buyer</th>
+              <th class="p-2 text-left">Item</th>
+              <th class="p-2 text-right">Sale</th>
+              <th class="p-2 text-right">Postage Charged</th>
+              <th class="p-2 text-left">Tracking / Carrier</th>
+              <th class="p-2 text-right">Item Cost</th>
+              <th class="p-2 text-right">Ship Cost</th>
+              <th class="p-2 text-right">eBay Fee</th>
+              <th class="p-2 text-right">Age Verif.</th>
+              <th class="p-2 text-right">Profit</th>
+            </tr>
+          </thead>
+          <tbody id="orders-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- INVENTORY TAB -->
+    <div id="tab-inventory" class="tab-panel hidden">
+      <div class="flex justify-between items-center mb-4">
+        <div class="text-sm text-gray-600">Read-only view. Stock is never pushed back to eBay from here.</div>
+        <button onclick="syncInventory()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">Fetch Stock from eBay</button>
+      </div>
+      <div class="overflow-x-auto bg-white rounded shadow">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-800 text-white">
+            <tr><th class="p-2 text-left">SKU</th><th class="p-2 text-left">Title</th><th class="p-2 text-right">Qty</th></tr>
+          </thead>
+          <tbody id="inventory-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- MESSAGES TAB -->
+    <div id="tab-messages" class="tab-panel hidden">
+      <div class="bg-white rounded shadow p-4 mb-4">
+        <label class="flex items-center gap-2 mb-3">
+          <input type="checkbox" id="away-toggle" onclick="toggleAway()"> <span class="font-medium">Away mode (auto-reply to buyer messages)</span>
+        </label>
+        <textarea id="away-message" class="w-full border rounded p-2 text-sm" rows="3"></textarea>
+        <button onclick="saveAwayMessage()" class="mt-2 bg-blue-600 text-white px-3 py-1.5 rounded text-sm">Save Message</button>
+        <button onclick="checkNow()" class="mt-2 ml-2 bg-gray-700 text-white px-3 py-1.5 rounded text-sm">Check Messages Now</button>
+        <p class="text-xs text-gray-500 mt-2">Also polls automatically every 5 minutes while away mode is on.</p>
+      </div>
+      <div class="bg-white rounded shadow p-4">
+        <h3 class="font-medium mb-2">Message Log</h3>
+        <div id="message-log" class="text-sm space-y-1"></div>
+      </div>
+    </div>
+
+    <!-- SETTINGS TAB -->
+    <div id="tab-settings" class="tab-panel hidden">
+      <div class="bg-white rounded shadow p-4 mb-4 max-w-xl">
+        <h3 class="font-medium mb-3">eBay App Keys</h3>
+        <input id="s-client-id" placeholder="Client ID" class="w-full border rounded p-2 mb-2 text-sm">
+        <input id="s-client-secret" placeholder="Client Secret" class="w-full border rounded p-2 mb-2 text-sm">
+        <input id="s-redirect-uri" placeholder="Redirect URI (RuName)" class="w-full border rounded p-2 mb-2 text-sm">
+        <select id="s-environment" class="w-full border rounded p-2 mb-2 text-sm">
+          <option value="production">Production</option>
+          <option value="sandbox">Sandbox (testing)</option>
+        </select>
+        <button onclick="saveKeys()" class="bg-blue-600 text-white px-3 py-1.5 rounded text-sm">Save Keys</button>
+        <button onclick="connectEbay()" class="bg-green-600 text-white px-3 py-1.5 rounded text-sm ml-2">Connect to eBay</button>
+      </div>
+
+      <div class="bg-white rounded shadow p-4 mb-4 max-w-xl">
+        <h3 class="font-medium mb-3">Fee Assumptions</h3>
+        <label class="block text-sm mb-1">eBay fee % (used when eBay doesn't give exact fee)</label>
+        <input id="s-fee-percent" type="number" step="0.1" class="w-full border rounded p-2 mb-2 text-sm">
+        <label class="block text-sm mb-1">eBay fixed fee per order</label>
+        <input id="s-fee-fixed" type="number" step="0.01" class="w-full border rounded p-2 mb-2 text-sm">
+        <label class="block text-sm mb-1">Age verification fee per order</label>
+        <input id="s-age-fee" type="number" step="0.01" class="w-full border rounded p-2 mb-2 text-sm">
+        <button onclick="saveFeeSettings()" class="bg-blue-600 text-white px-3 py-1.5 rounded text-sm">Save</button>
+      </div>
+
+      <div class="bg-white rounded shadow p-4 max-w-xl">
+        <h3 class="font-medium mb-3">Fallback Shipping Rates</h3>
+        <div id="rates-list" class="text-sm space-y-1 mb-3"></div>
+        <div class="flex gap-2">
+          <input id="r-carrier" placeholder="Carrier" class="border rounded p-2 text-sm w-1/3">
+          <input id="r-service" placeholder="Service" class="border rounded p-2 text-sm w-1/3">
+          <input id="r-cost" type="number" step="0.01" placeholder="Cost" class="border rounded p-2 text-sm w-1/3">
+        </div>
+        <button onclick="addRate()" class="mt-2 bg-blue-600 text-white px-3 py-1.5 rounded text-sm">Add Rate</button>
+      </div>
+    </div>
+  </div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
