@@ -33,6 +33,7 @@ def _get_tracking_for_order(order_id, base_url, headers):
         r = requests.get(
             f"{base_url}/sell/fulfillment/v1/order/{order_id}/shipping_fulfillment",
             headers=headers,
+            timeout=15,
         )
         r.raise_for_status()
         fulfillments = r.json().get("fulfillments", [])
@@ -76,9 +77,13 @@ def list_orders(db: Session = Depends(get_db)):
 def sync_orders(db: Session = Depends(get_db)):
     settings = db.query(Settings).first()
     base_url = "https://api.sandbox.ebay.com" if settings.ebay_environment == "sandbox" else "https://api.ebay.com"
-    headers = {"Authorization": f"Bearer {ebay_client.get_access_token()}"}
 
-    remote_orders = ebay_client.fetch_orders()
+    try:
+        headers = {"Authorization": f"Bearer {ebay_client.get_access_token()}"}
+        remote_orders = ebay_client.fetch_orders()
+    except Exception as e:
+        return {"error": str(e)}
+
     imported = 0
     for ro in remote_orders:
         oid = ro.get("orderId")
