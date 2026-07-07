@@ -58,8 +58,12 @@ async function syncOrders() {
   btn.disabled = true; btn.textContent = "Importing...";
   try {
     const r = await (await fetch("/api/orders/sync", { method: "POST" })).json();
-    alert("Imported " + (r.imported ?? 0) + " orders");
-  } catch (e) { alert("Error importing orders - check Settings/connection."); }
+    if (r.error) {
+      alert("Import failed:\n\n" + r.error);
+    } else {
+      alert("Imported " + (r.imported ?? 0) + " orders");
+    }
+  } catch (e) { alert("Error importing orders - check your internet connection and try again."); }
   btn.disabled = false; btn.textContent = "Import Orders from eBay";
   loadOrders();
 }
