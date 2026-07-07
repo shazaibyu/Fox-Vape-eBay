@@ -57,11 +57,12 @@
           <button onclick="syncOrders(event)" class="bg-blue-600 text-white px-3 py-2 rounded text-sm">Import Orders from eBay</button>
         </div>
       </div>
+      <div id="status-chips" class="flex flex-wrap gap-2 mb-3"></div>
       <div class="flex flex-wrap gap-2 mb-3">
         <input id="order-search" placeholder="Search buyer, item, order, tracking..." class="border rounded p-2 text-sm w-64" oninput="renderOrders()">
         <select id="order-filter" class="border rounded p-2 text-sm" onchange="renderOrders()">
           <option value="all">All orders</option>
-          <option value="active">Active only (hide refunded)</option>
+          <option value="active">Hide refunded</option>
           <option value="refunded">Refunded only</option>
           <option value="estimated">Estimated shipping only</option>
         </select>
@@ -73,6 +74,7 @@
             <tr>
               <th class="p-2 text-left">Order / Buyer</th>
               <th class="p-2 text-left">Item</th>
+              <th class="p-2 text-left">Dispatch</th>
               <th class="p-2 text-right">Sale</th>
               <th class="p-2 text-right">Postage</th>
               <th class="p-2 text-left">Tracking / Carrier</th>

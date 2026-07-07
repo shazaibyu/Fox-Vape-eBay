@@ -63,12 +63,49 @@ async function loadDashboard() {
 }
 
 // ---- orders ----
+let STATUS_FILTER = "all";
+const STATUS_META = {
+  all:              { label: "All",                chip: "bg-gray-200 text-gray-800" },
+  awaiting_dispatch:{ label: "Awaiting dispatch",  chip: "bg-blue-100 text-blue-800",   badge: "bg-blue-100 text-blue-800" },
+  due_24h:          { label: "Due in 24h",         chip: "bg-amber-100 text-amber-800", badge: "bg-amber-100 text-amber-800" },
+  overdue:          { label: "Overdue",            chip: "bg-red-100 text-red-800",     badge: "bg-red-100 text-red-800" },
+  shipped:          { label: "Shipped",            chip: "bg-green-100 text-green-800", badge: "bg-green-100 text-green-800" },
+  shipped_late:     { label: "Shipped late",       chip: "bg-orange-100 text-orange-800", badge: "bg-orange-100 text-orange-800" },
+  past_est_delivery:{ label: "Past est. delivery", chip: "bg-purple-100 text-purple-800", badge: "bg-purple-100 text-purple-800" },
+  refunded:         { label: "Refunded",           chip: "bg-gray-300 text-gray-700",   badge: "bg-gray-300 text-gray-700" },
+};
+
+function renderStatusChips() {
+  const counts = { all: ALL_ORDERS.length };
+  ALL_ORDERS.forEach(o => {
+    counts[o.fulfillment_status] = (counts[o.fulfillment_status] || 0) + 1;
+  });
+  const container = document.getElementById("status-chips");
+  container.innerHTML = Object.entries(STATUS_META).map(([key, meta]) => {
+    const n = counts[key] || 0;
+    if (key !== "all" && n === 0) return "";
+    const active = STATUS_FILTER === key ? "ring-2 ring-blue-500" : "";
+    return `<button onclick="setStatusFilter('${key}')"
+      class="px-3 py-1.5 rounded-full text-xs font-medium ${meta.chip} ${active}">
+      ${meta.label} (${n})</button>`;
+  }).join("");
+}
+function setStatusFilter(s) { STATUS_FILTER = s; renderOrders(); }
+
+function fmtDate(iso) {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" }) + " " +
+         d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+}
+
 async function loadOrders() {
   ALL_ORDERS = await (await fetch("/api/orders")).json();
   renderOrders();
 }
 
 function renderOrders() {
+  renderStatusChips();
   const q = (document.getElementById("order-search").value || "").toLowerCase();
   const filter = document.getElementById("order-filter").value;
   let rows = ALL_ORDERS.filter(o => {
@@ -77,6 +114,7 @@ function renderOrders() {
     if (filter === "active" && o.refunded) return false;
     if (filter === "refunded" && !o.refunded) return false;
     if (filter === "estimated" && !o.shipping_cost_is_estimated) return false;
+    if (STATUS_FILTER !== "all" && o.fulfillment_status !== STATUS_FILTER) return false;
     return true;
   });
 
@@ -86,11 +124,19 @@ function renderOrders() {
   rows.forEach(o => {
     if (!o.refunded) total += o.profit;
     const profitColor = o.profit >= 0 ? "text-green-700" : "text-red-700";
-    const rowClass = o.refunded ? "opacity-50 line-through-none bg-red-50" : "";
+    const rowClass = o.refunded ? "opacity-50 bg-red-50" : "";
+    const meta = STATUS_META[o.fulfillment_status] || STATUS_META.shipped;
+    const shipBy = o.fulfillment_status === "overdue" || o.fulfillment_status === "due_24h"
+      ? `<span class="text-red-700 font-medium">ship by ${fmtDate(o.ship_by_date)}</span>`
+      : (o.shipped_date ? `sent ${fmtDate(o.shipped_date)}` : (o.ship_by_date ? `ship by ${fmtDate(o.ship_by_date)}` : "-"));
     body.innerHTML += `
       <tr class="border-b ${rowClass}">
         <td class="p-2">${o.ebay_order_id}<br><span class="text-gray-400">${o.buyer_username || ""}</span></td>
         <td class="p-2 max-w-xs truncate">${o.item_title || ""}</td>
+        <td class="p-2">
+          <span class="px-2 py-0.5 rounded-full text-[10px] font-medium ${meta.badge || ""}">${meta.label}</span>
+          <br><span class="text-gray-500">${shipBy}</span>
+        </td>
         <td class="p-2 text-right">${fmt(o.sale_price)}</td>
         <td class="p-2 text-right">${fmt(o.shipping_charged)}</td>
         <td class="p-2">${o.carrier || "-"}<br><span class="text-gray-400">${o.tracking_number || "no tracking"}</span></td>

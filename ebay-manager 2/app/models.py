@@ -68,6 +68,10 @@ class Order(Base):
     tracking_number = Column(String, nullable=True)
     carrier = Column(String, nullable=True)
 
+    ship_by_date = Column(DateTime, nullable=True)       # dispatch deadline from eBay
+    shipped_date = Column(DateTime, nullable=True)       # when you actually dispatched
+    max_delivery_date = Column(DateTime, nullable=True)  # eBay's estimated latest delivery
+
     shipping_cost = Column(Float, default=0.0)
     shipping_cost_is_estimated = Column(Boolean, default=True)
 

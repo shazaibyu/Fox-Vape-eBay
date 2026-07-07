@@ -32,6 +32,9 @@ def init_db():
     migrations = [
         "ALTER TABLE orders ADD COLUMN refunded BOOLEAN DEFAULT FALSE",
         "ALTER TABLE settings ADD COLUMN low_stock_threshold INTEGER DEFAULT 3",
+        "ALTER TABLE orders ADD COLUMN ship_by_date TIMESTAMP",
+        "ALTER TABLE orders ADD COLUMN shipped_date TIMESTAMP",
+        "ALTER TABLE orders ADD COLUMN max_delivery_date TIMESTAMP",
     ]
     with engine.connect() as conn:
         for stmt in migrations:
