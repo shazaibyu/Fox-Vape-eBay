@@ -10,11 +10,16 @@ APIs used:
 
 All calls use the *refresh token* obtained once via the OAuth consent flow
 (see /auth routes) to mint short-lived access tokens.
+
+Every network call has an explicit timeout - without this, a stalled
+connection to eBay would hang forever instead of failing with a clear error.
 """
 import requests
 import datetime
 from .database import SessionLocal
 from .models import Settings
+
+TIMEOUT = 20  # seconds - every call to eBay must finish or fail within this
 
 PROD_BASE = "https://api.ebay.com"
 SANDBOX_BASE = "https://api.sandbox.ebay.com"
@@ -25,8 +30,6 @@ SANDBOX_AUTH = "https://auth.sandbox.ebay.com/oauth2/authorize"
 PROD_TOKEN = "https://api.ebay.com/identity/v1/oauth2/token"
 SANDBOX_TOKEN = "https://api.sandbox.ebay.com/identity/v1/oauth2/token"
 
-# Scopes needed. sell.inventory is read-only usage on our side even though
-# the scope itself also grants write - we simply never call the write endpoints.
 SCOPES = [
     "https://api.ebay.com/oauth/api_scope/sell.inventory",
     "https://api.ebay.com/oauth/api_scope/sell.fulfillment",
@@ -62,8 +65,6 @@ def build_authorize_url():
 
 
 def exchange_code_for_token(code: str):
-    """First-time handshake: swap the ?code=... from the redirect for a
-    refresh_token, which we store and reuse from then on."""
     s = _settings()
     _, _, token_url = _base_urls(s)
     resp = requests.post(
@@ -75,8 +76,10 @@ def exchange_code_for_token(code: str):
             "code": code,
             "redirect_uri": s.ebay_redirect_uri,
         },
+        timeout=TIMEOUT,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        raise RuntimeError(f"eBay token exchange failed ({resp.status_code}): {resp.text}")
     data = resp.json()
 
     db = SessionLocal()
@@ -93,7 +96,6 @@ def exchange_code_for_token(code: str):
 
 
 def get_access_token():
-    """Returns a valid (short-lived) access token, refreshing if needed."""
     now = datetime.datetime.utcnow()
     if _token_cache["access_token"] and _token_cache["expires_at"] > now:
         return _token_cache["access_token"]
@@ -112,8 +114,10 @@ def get_access_token():
             "refresh_token": s.ebay_refresh_token,
             "scope": " ".join(SCOPES),
         },
+        timeout=TIMEOUT,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        raise RuntimeError(f"eBay token refresh failed ({resp.status_code}): {resp.text}")
     data = resp.json()
     _token_cache["access_token"] = data["access_token"]
     _token_cache["expires_at"] = now + datetime.timedelta(seconds=data["expires_in"] - 60)
@@ -128,19 +132,20 @@ def _headers():
 
 
 def fetch_inventory(limit=100):
-    """READ-ONLY. We only ever GET here - nothing in this file issues a
-    PUT/POST/DELETE against the Inventory API."""
     s = _settings()
     base, _, _ = _base_urls(s)
     items = []
     offset = 0
+    headers = _headers()
     while True:
         r = requests.get(
             f"{base}/sell/inventory/v1/inventory_item",
-            headers=_headers(),
+            headers=headers,
             params={"limit": limit, "offset": offset},
+            timeout=TIMEOUT,
         )
-        r.raise_for_status()
+        if not r.ok:
+            raise RuntimeError(f"eBay inventory fetch failed ({r.status_code}): {r.text}")
         data = r.json()
         batch = data.get("inventoryItems", [])
         items.extend(batch)
@@ -151,7 +156,6 @@ def fetch_inventory(limit=100):
 
 
 def fetch_orders(order_ids=None, creation_date_from=None):
-    """Pull orders via the Fulfillment API."""
     s = _settings()
     base, _, _ = _base_urls(s)
     params = {"limit": 50}
@@ -163,10 +167,17 @@ def fetch_orders(order_ids=None, creation_date_from=None):
 
     orders = []
     offset = 0
+    headers = _headers()
     while True:
         params["offset"] = offset
-        r = requests.get(f"{base}/sell/fulfillment/v1/order", headers=_headers(), params=params)
-        r.raise_for_status()
+        r = requests.get(
+            f"{base}/sell/fulfillment/v1/order",
+            headers=headers,
+            params=params,
+            timeout=TIMEOUT,
+        )
+        if not r.ok:
+            raise RuntimeError(f"eBay order fetch failed ({r.status_code}): {r.text}")
         data = r.json()
         batch = data.get("orders", [])
         orders.extend(batch)
@@ -176,18 +187,13 @@ def fetch_orders(order_ids=None, creation_date_from=None):
     return orders
 
 
-# ---------------------------------------------------------------------
-# Trading API (legacy XML) - used for buyer messaging, since there is no
-# equivalent REST endpoint yet with the same message read/send behaviour.
-# ---------------------------------------------------------------------
 TRADING_ENDPOINT = "https://api.ebay.com/ws/api.dll"
 TRADING_ENDPOINT_SANDBOX = "https://api.sandbox.ebay.com/ws/api.dll"
 
 
 def _trading_headers(call_name):
-    s = _settings()
     return {
-        "X-EBAY-API-SITEID": "3",  # 3 = UK. Change if you sell on a different site.
+        "X-EBAY-API-SITEID": "3",
         "X-EBAY-API-COMPATIBILITY-LEVEL": "1193",
         "X-EBAY-API-CALL-NAME": call_name,
         "Content-Type": "text/xml",
@@ -207,9 +213,10 @@ def fetch_member_messages():
   <MessageStatus>Unanswered</MessageStatus>
   <DetailLevel>ReturnHeaders</DetailLevel>
 </GetMemberMessagesRequest>"""
-    r = requests.post(endpoint, headers=_trading_headers("GetMemberMessages"), data=xml)
-    r.raise_for_status()
-    return r.text  # caller can parse the XML; kept raw here to keep this file short
+    r = requests.post(endpoint, headers=_trading_headers("GetMemberMessages"), data=xml, timeout=TIMEOUT)
+    if not r.ok:
+        raise RuntimeError(f"eBay GetMemberMessages failed ({r.status_code}): {r.text}")
+    return r.text
 
 
 def send_reply(item_id: str, buyer_username: str, message_text: str):
@@ -228,6 +235,9 @@ def send_reply(item_id: str, buyer_username: str, message_text: str):
     <RecipientID>{buyer_username}</RecipientID>
   </MemberMessage>
 </AddMemberMessageAAQToPartnerRequest>"""
-    r = requests.post(endpoint, headers=_trading_headers("AddMemberMessageAAQToPartner"), data=xml)
-    r.raise_for_status()
+    r = requests.post(
+        endpoint, headers=_trading_headers("AddMemberMessageAAQToPartner"), data=xml, timeout=TIMEOUT
+    )
+    if not r.ok:
+        raise RuntimeError(f"eBay send message failed ({r.status_code}): {r.text}")
     return r.text
