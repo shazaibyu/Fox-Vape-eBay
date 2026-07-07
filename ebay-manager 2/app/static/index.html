@@ -2,56 +2,103 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>eBay Seller Manager</title>
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 </head>
 <body class="bg-gray-100 min-h-screen">
-  <div class="max-w-7xl mx-auto p-6">
-    <div class="flex items-center justify-between mb-6">
-      <h1 class="text-2xl font-bold">eBay Seller Manager</h1>
-      <span id="conn-status" class="text-sm px-3 py-1 rounded-full bg-gray-300">checking...</span>
-    </div>
+<div class="flex min-h-screen">
 
-    <div class="flex gap-2 mb-6 border-b">
-      <button class="tab-btn px-4 py-2 font-medium" data-tab="orders">Orders & Profit</button>
-      <button class="tab-btn px-4 py-2 font-medium" data-tab="inventory">Inventory</button>
-      <button class="tab-btn px-4 py-2 font-medium" data-tab="messages">Auto Messages</button>
-      <button class="tab-btn px-4 py-2 font-medium" data-tab="settings">Settings</button>
-    </div>
+  <!-- SIDEBAR -->
+  <aside class="w-56 bg-white border-r flex-shrink-0 flex flex-col">
+    <div class="p-4 font-bold text-lg border-b">eBay Seller Manager</div>
+    <nav class="flex-1 p-2 space-y-1">
+      <button class="nav-btn w-full text-left px-3 py-2 rounded text-sm" data-page="dashboard">📊 Dashboard</button>
+      <button class="nav-btn w-full text-left px-3 py-2 rounded text-sm" data-page="orders">🧾 Orders & Profit</button>
+      <button class="nav-btn w-full text-left px-3 py-2 rounded text-sm" data-page="inventory">📦 Inventory</button>
+      <button class="nav-btn w-full text-left px-3 py-2 rounded text-sm" data-page="messages">💬 Auto Messages</button>
+      <button class="nav-btn w-full text-left px-3 py-2 rounded text-sm" data-page="settings">⚙️ Settings</button>
+    </nav>
+    <div id="conn-status" class="m-3 text-xs px-3 py-2 rounded bg-gray-200 text-center">checking...</div>
+  </aside>
 
-    <!-- ORDERS TAB -->
-    <div id="tab-orders" class="tab-panel">
-      <div class="flex justify-between items-center mb-4">
-        <div class="text-lg">Total profit (visible orders): <span id="total-profit" class="font-bold"></span></div>
-        <button onclick="syncOrders()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">Import Orders from eBay</button>
+  <!-- MAIN -->
+  <main class="flex-1 p-6 overflow-x-auto">
+
+    <!-- DASHBOARD -->
+    <section id="page-dashboard" class="page">
+      <h1 class="text-xl font-bold mb-4">Dashboard</h1>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+        <div class="bg-white rounded shadow p-4"><p class="text-xs text-gray-500">Profit (30 days)</p><p id="d-profit30" class="text-2xl font-bold text-green-700">-</p></div>
+        <div class="bg-white rounded shadow p-4"><p class="text-xs text-gray-500">Revenue (30 days)</p><p id="d-rev30" class="text-2xl font-bold">-</p></div>
+        <div class="bg-white rounded shadow p-4"><p class="text-xs text-gray-500">Orders (30 days)</p><p id="d-orders30" class="text-2xl font-bold">-</p></div>
+        <div class="bg-white rounded shadow p-4"><p class="text-xs text-gray-500">Avg profit / order</p><p id="d-avg30" class="text-2xl font-bold">-</p></div>
+      </div>
+      <div class="grid md:grid-cols-2 gap-4">
+        <div class="bg-white rounded shadow p-4">
+          <h2 class="font-medium mb-2 text-sm">Profit by month</h2>
+          <canvas id="chart-monthly" height="220"></canvas>
+        </div>
+        <div class="bg-white rounded shadow p-4">
+          <h2 class="font-medium mb-2 text-sm">Top items by profit</h2>
+          <div id="top-items" class="text-sm space-y-1"></div>
+        </div>
+      </div>
+      <div class="mt-4 text-xs text-gray-500">All-time: <span id="d-alltime">-</span> · Refunded orders excluded from totals (<span id="d-refunded">0</span> refunded)</div>
+    </section>
+
+    <!-- ORDERS -->
+    <section id="page-orders" class="page hidden">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <h1 class="text-xl font-bold">Orders & Profit</h1>
+        <div class="flex gap-2">
+          <a href="/api/analytics/export.csv" class="bg-gray-700 text-white px-3 py-2 rounded text-sm">⬇ Export CSV</a>
+          <button onclick="syncOrders(event)" class="bg-blue-600 text-white px-3 py-2 rounded text-sm">Import Orders from eBay</button>
+        </div>
+      </div>
+      <div class="flex flex-wrap gap-2 mb-3">
+        <input id="order-search" placeholder="Search buyer, item, order, tracking..." class="border rounded p-2 text-sm w-64" oninput="renderOrders()">
+        <select id="order-filter" class="border rounded p-2 text-sm" onchange="renderOrders()">
+          <option value="all">All orders</option>
+          <option value="active">Active only (hide refunded)</option>
+          <option value="refunded">Refunded only</option>
+          <option value="estimated">Estimated shipping only</option>
+        </select>
+        <div class="ml-auto text-sm py-2">Total profit shown: <b id="total-profit"></b></div>
       </div>
       <div class="overflow-x-auto bg-white rounded shadow">
-        <table class="w-full text-sm">
+        <table class="w-full text-xs">
           <thead class="bg-gray-800 text-white">
             <tr>
-              <th class="p-2 text-left">Order</th>
-              <th class="p-2 text-left">Buyer</th>
+              <th class="p-2 text-left">Order / Buyer</th>
               <th class="p-2 text-left">Item</th>
               <th class="p-2 text-right">Sale</th>
-              <th class="p-2 text-right">Postage Charged</th>
+              <th class="p-2 text-right">Postage</th>
               <th class="p-2 text-left">Tracking / Carrier</th>
               <th class="p-2 text-right">Item Cost</th>
               <th class="p-2 text-right">Ship Cost</th>
               <th class="p-2 text-right">eBay Fee</th>
-              <th class="p-2 text-right">Age Verif.</th>
+              <th class="p-2 text-right">Age V.</th>
               <th class="p-2 text-right">Profit</th>
+              <th class="p-2 text-center">Refund</th>
             </tr>
           </thead>
           <tbody id="orders-body"></tbody>
         </table>
       </div>
-    </div>
+    </section>
 
-    <!-- INVENTORY TAB -->
-    <div id="tab-inventory" class="tab-panel hidden">
-      <div class="flex justify-between items-center mb-4">
-        <div class="text-sm text-gray-600">Read-only view. Stock is never pushed back to eBay from here.</div>
-        <button onclick="syncInventory()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">Fetch Stock from eBay</button>
+    <!-- INVENTORY -->
+    <section id="page-inventory" class="page hidden">
+      <div class="flex items-center justify-between mb-4">
+        <h1 class="text-xl font-bold">Inventory</h1>
+        <button onclick="syncInventory(event)" class="bg-blue-600 text-white px-3 py-2 rounded text-sm">Fetch Stock from eBay</button>
+      </div>
+      <p class="text-xs text-gray-500 mb-3">Read-only view - stock is never pushed back to eBay from here. Items at or below the low-stock threshold are highlighted.</p>
+      <div class="flex gap-2 mb-3">
+        <input id="inv-search" placeholder="Search SKU or title..." class="border rounded p-2 text-sm w-64" oninput="renderInventory()">
+        <label class="text-sm py-2">Low stock at ≤ <input id="low-stock" type="number" value="3" min="0" class="border rounded p-1 w-14 text-sm" onchange="saveLowStock()"></label>
       </div>
       <div class="overflow-x-auto bg-white rounded shadow">
         <table class="w-full text-sm">
@@ -61,27 +108,31 @@
           <tbody id="inventory-body"></tbody>
         </table>
       </div>
-    </div>
+    </section>
 
-    <!-- MESSAGES TAB -->
-    <div id="tab-messages" class="tab-panel hidden">
+    <!-- MESSAGES -->
+    <section id="page-messages" class="page hidden">
+      <h1 class="text-xl font-bold mb-4">Auto Messages</h1>
       <div class="bg-white rounded shadow p-4 mb-4">
         <label class="flex items-center gap-2 mb-3">
           <input type="checkbox" id="away-toggle" onclick="toggleAway()"> <span class="font-medium">Away mode (auto-reply to buyer messages)</span>
         </label>
         <textarea id="away-message" class="w-full border rounded p-2 text-sm" rows="3"></textarea>
-        <button onclick="saveAwayMessage()" class="mt-2 bg-blue-600 text-white px-3 py-1.5 rounded text-sm">Save Message</button>
-        <button onclick="checkNow()" class="mt-2 ml-2 bg-gray-700 text-white px-3 py-1.5 rounded text-sm">Check Messages Now</button>
-        <p class="text-xs text-gray-500 mt-2">Also polls automatically every 5 minutes while away mode is on.</p>
+        <div class="mt-2 flex gap-2">
+          <button onclick="saveAwayMessage()" class="bg-blue-600 text-white px-3 py-1.5 rounded text-sm">Save Message</button>
+          <button onclick="checkNow()" class="bg-gray-700 text-white px-3 py-1.5 rounded text-sm">Check Messages Now</button>
+        </div>
+        <p class="text-xs text-gray-500 mt-2">Checks automatically every 5 minutes while away mode is on. eBay also has a native version under Seller Hub → Messages → Settings.</p>
       </div>
       <div class="bg-white rounded shadow p-4">
-        <h3 class="font-medium mb-2">Message Log</h3>
+        <h3 class="font-medium mb-2 text-sm">Message log</h3>
         <div id="message-log" class="text-sm space-y-1"></div>
       </div>
-    </div>
+    </section>
 
-    <!-- SETTINGS TAB -->
-    <div id="tab-settings" class="tab-panel hidden">
+    <!-- SETTINGS -->
+    <section id="page-settings" class="page hidden">
+      <h1 class="text-xl font-bold mb-4">Settings</h1>
       <div class="bg-white rounded shadow p-4 mb-4 max-w-xl">
         <h3 class="font-medium mb-3">eBay App Keys</h3>
         <input id="s-client-id" placeholder="Client ID" class="w-full border rounded p-2 mb-2 text-sm">
@@ -97,7 +148,7 @@
 
       <div class="bg-white rounded shadow p-4 mb-4 max-w-xl">
         <h3 class="font-medium mb-3">Fee Assumptions</h3>
-        <label class="block text-sm mb-1">eBay fee % (used when eBay doesn't give exact fee)</label>
+        <label class="block text-sm mb-1">eBay fee % (used when eBay doesn't give the exact fee)</label>
         <input id="s-fee-percent" type="number" step="0.1" class="w-full border rounded p-2 mb-2 text-sm">
         <label class="block text-sm mb-1">eBay fixed fee per order</label>
         <input id="s-fee-fixed" type="number" step="0.01" class="w-full border rounded p-2 mb-2 text-sm">
@@ -108,6 +159,7 @@
 
       <div class="bg-white rounded shadow p-4 max-w-xl">
         <h3 class="font-medium mb-3">Fallback Shipping Rates</h3>
+        <p class="text-xs text-gray-500 mb-2">Used when the real label cost isn't available for a tracking number. Carrier is detected from the tracking number format.</p>
         <div id="rates-list" class="text-sm space-y-1 mb-3"></div>
         <div class="flex gap-2">
           <input id="r-carrier" placeholder="Carrier" class="border rounded p-2 text-sm w-1/3">
@@ -116,9 +168,10 @@
         </div>
         <button onclick="addRate()" class="mt-2 bg-blue-600 text-white px-3 py-1.5 rounded text-sm">Add Rate</button>
       </div>
-    </div>
-  </div>
+    </section>
 
+  </main>
+</div>
 <script src="/static/app.js"></script>
 </body>
 </html>

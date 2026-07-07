@@ -28,6 +28,7 @@ class Settings(Base):
     age_verification_fee = Column(Float, default=0.54)
 
     away_mode = Column(Boolean, default=False)
+    low_stock_threshold = Column(Integer, default=3)
     away_message = Column(Text, default=(
         "Thanks for your message! I'm away right now and will reply as soon "
         "as I'm back. Your order is still being processed as normal."
@@ -74,6 +75,8 @@ class Order(Base):
     ebay_fee = Column(Float, default=0.0)
     ebay_fee_is_estimated = Column(Boolean, default=True)
     age_verification_fee = Column(Float, default=0.54)
+
+    refunded = Column(Boolean, default=False)
 
     profit = Column(Float, default=0.0)
 

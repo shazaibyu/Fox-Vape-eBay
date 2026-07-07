@@ -25,6 +25,21 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 def init_db():
     Base.metadata.create_all(engine)
+    # Lightweight migrations: create_all doesn't add new columns to tables
+    # that already exist (e.g. the Neon database from an earlier version),
+    # so add them manually and ignore "already exists" errors.
+    from sqlalchemy import text
+    migrations = [
+        "ALTER TABLE orders ADD COLUMN refunded BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE settings ADD COLUMN low_stock_threshold INTEGER DEFAULT 3",
+    ]
+    with engine.connect() as conn:
+        for stmt in migrations:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+            except Exception:
+                conn.rollback()  # column already exists - fine
     # ensure a single settings row always exists
     db = SessionLocal()
     try:

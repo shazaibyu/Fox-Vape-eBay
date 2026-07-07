@@ -67,6 +67,7 @@ def list_orders(db: Session = Depends(get_db)):
             "ebay_fee": o.ebay_fee,
             "ebay_fee_is_estimated": o.ebay_fee_is_estimated,
             "age_verification_fee": o.age_verification_fee,
+            "refunded": bool(o.refunded),
             "profit": o.profit,
         }
         for o in orders
@@ -116,6 +117,9 @@ def sync_orders(db: Session = Depends(get_db)):
         if created:
             row.order_date = datetime.datetime.strptime(created[:19], "%Y-%m-%dT%H:%M:%S")
         row.status = ro.get("orderFulfillmentStatus")
+        payment_status = ro.get("orderPaymentStatus", "")
+        if payment_status == "FULLY_REFUNDED":
+            row.refunded = True
         row.raw_json = json.dumps(ro)
 
         tracking, carrier_code = _get_tracking_for_order(oid, base_url, headers)
@@ -139,9 +143,10 @@ def sync_orders(db: Session = Depends(get_db)):
 
 @router.post("/{order_id}/edit")
 def edit_order(order_id: str, item_cost: float = None, shipping_cost: float = None,
-                db: Session = Depends(get_db)):
+                refunded: bool = None, db: Session = Depends(get_db)):
     """Lets you manually correct the item cost (eBay has no idea what YOU
-    paid for stock) or override an estimated shipping cost with the real one."""
+    paid for stock), override an estimated shipping cost with the real one,
+    or mark an order refunded so it's excluded from profit totals."""
     settings = db.query(Settings).first()
     order = db.query(Order).filter(Order.ebay_order_id == order_id).first()
     if not order:
@@ -151,6 +156,8 @@ def edit_order(order_id: str, item_cost: float = None, shipping_cost: float = No
     if shipping_cost is not None:
         order.shipping_cost = shipping_cost
         order.shipping_cost_is_estimated = False
+    if refunded is not None:
+        order.refunded = refunded
     _recalc(order, settings)
     db.commit()
     return {"ok": True, "profit": order.profit}

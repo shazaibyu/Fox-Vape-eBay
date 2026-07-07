@@ -1,69 +1,128 @@
 const fmt = (n) => "£" + (Number(n) || 0).toFixed(2);
+let ALL_ORDERS = [];
+let ALL_INVENTORY = [];
+let LOW_STOCK = 3;
+let monthlyChart = null;
 
-// ---- tabs ----
-document.querySelectorAll(".tab-btn").forEach(btn => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".tab-panel").forEach(p => p.classList.add("hidden"));
-    document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("border-b-2", "border-blue-600", "text-blue-600"));
-    document.getElementById("tab-" + btn.dataset.tab).classList.remove("hidden");
-    btn.classList.add("border-b-2", "border-blue-600", "text-blue-600");
-  });
+// ---- navigation ----
+document.querySelectorAll(".nav-btn").forEach(btn => {
+  btn.addEventListener("click", () => showPage(btn.dataset.page));
 });
-document.querySelector(".tab-btn").click();
-
+function showPage(page) {
+  document.querySelectorAll(".page").forEach(p => p.classList.add("hidden"));
+  document.querySelectorAll(".nav-btn").forEach(b => b.classList.remove("bg-blue-100", "text-blue-800", "font-medium"));
+  document.getElementById("page-" + page).classList.remove("hidden");
+  document.querySelector(`.nav-btn[data-page="${page}"]`).classList.add("bg-blue-100", "text-blue-800", "font-medium");
+  if (page === "dashboard") loadDashboard();
+}
+ 
 // ---- connection status ----
 async function refreshStatus() {
-  const s = await (await fetch("/auth/status")).json();
-  const el = document.getElementById("conn-status");
-  el.textContent = s.connected ? "Connected to eBay (" + s.environment + ")" : "Not connected";
-  el.className = "text-sm px-3 py-1 rounded-full " + (s.connected ? "bg-green-200 text-green-800" : "bg-red-200 text-red-800");
+  try {
+    const s = await (await fetch("/auth/status")).json();
+    const el = document.getElementById("conn-status");
+    el.textContent = s.connected ? "Connected (" + s.environment + ")" : "Not connected";
+    el.className = "m-3 text-xs px-3 py-2 rounded text-center " + (s.connected ? "bg-green-200 text-green-800" : "bg-red-200 text-red-800");
+  } catch (e) {}
+}
+
+// ---- dashboard ----
+async function loadDashboard() {
+  try {
+    const [summary, monthly, top] = await Promise.all([
+      (await fetch("/api/analytics/summary")).json(),
+      (await fetch("/api/analytics/monthly")).json(),
+      (await fetch("/api/analytics/top-items")).json(),
+    ]);
+    document.getElementById("d-profit30").textContent = fmt(summary.last_30_days.profit);
+    document.getElementById("d-rev30").textContent = fmt(summary.last_30_days.revenue);
+    document.getElementById("d-orders30").textContent = summary.last_30_days.orders;
+    document.getElementById("d-avg30").textContent = fmt(summary.last_30_days.avg_profit);
+    document.getElementById("d-alltime").textContent =
+      `${summary.all_time.orders} orders, ${fmt(summary.all_time.revenue)} revenue, ${fmt(summary.all_time.profit)} profit`;
+    document.getElementById("d-refunded").textContent = summary.refunded_orders;
+
+    const ctx = document.getElementById("chart-monthly");
+    if (monthlyChart) monthlyChart.destroy();
+    monthlyChart = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: monthly.map(m => m.month),
+        datasets: [
+          { label: "Profit", data: monthly.map(m => m.profit), backgroundColor: "#16a34a" },
+          { label: "Revenue", data: monthly.map(m => m.revenue), backgroundColor: "#93c5fd" },
+        ],
+      },
+      options: { responsive: true, plugins: { legend: { position: "bottom" } } },
+    });
+
+    document.getElementById("top-items").innerHTML = top.length
+      ? top.map(t => `<div class="flex justify-between border-b py-1"><span class="truncate pr-2">${t.item}</span><span class="font-medium ${t.profit >= 0 ? "text-green-700" : "text-red-700"}">${fmt(t.profit)}</span></div>`).join("")
+      : '<p class="text-gray-400">No orders yet - import orders first.</p>';
+  } catch (e) {}
 }
 
 // ---- orders ----
 async function loadOrders() {
-  const orders = await (await fetch("/api/orders")).json();
+  ALL_ORDERS = await (await fetch("/api/orders")).json();
+  renderOrders();
+}
+
+function renderOrders() {
+  const q = (document.getElementById("order-search").value || "").toLowerCase();
+  const filter = document.getElementById("order-filter").value;
+  let rows = ALL_ORDERS.filter(o => {
+    const hay = [o.buyer_username, o.item_title, o.ebay_order_id, o.tracking_number].join(" ").toLowerCase();
+    if (q && !hay.includes(q)) return false;
+    if (filter === "active" && o.refunded) return false;
+    if (filter === "refunded" && !o.refunded) return false;
+    if (filter === "estimated" && !o.shipping_cost_is_estimated) return false;
+    return true;
+  });
+
   const body = document.getElementById("orders-body");
   body.innerHTML = "";
   let total = 0;
-  orders.forEach(o => {
-    total += o.profit;
+  rows.forEach(o => {
+    if (!o.refunded) total += o.profit;
     const profitColor = o.profit >= 0 ? "text-green-700" : "text-red-700";
+    const rowClass = o.refunded ? "opacity-50 line-through-none bg-red-50" : "";
     body.innerHTML += `
-      <tr class="border-b">
-        <td class="p-2">${o.ebay_order_id}</td>
-        <td class="p-2">${o.buyer_username || ""}</td>
-        <td class="p-2">${o.item_title || ""}</td>
+      <tr class="border-b ${rowClass}">
+        <td class="p-2">${o.ebay_order_id}<br><span class="text-gray-400">${o.buyer_username || ""}</span></td>
+        <td class="p-2 max-w-xs truncate">${o.item_title || ""}</td>
         <td class="p-2 text-right">${fmt(o.sale_price)}</td>
         <td class="p-2 text-right">${fmt(o.shipping_charged)}</td>
-        <td class="p-2">${o.carrier || "-"}<br><span class="text-gray-400 text-xs">${o.tracking_number || "no tracking"}</span></td>
+        <td class="p-2">${o.carrier || "-"}<br><span class="text-gray-400">${o.tracking_number || "no tracking"}</span></td>
         <td class="p-2 text-right">
-          <input type="number" step="0.01" value="${o.item_cost}" class="w-20 border rounded p-1 text-right"
+          <input type="number" step="0.01" value="${o.item_cost}" class="w-16 border rounded p-1 text-right"
             onchange="editOrder('${o.ebay_order_id}', 'item_cost', this.value)">
         </td>
         <td class="p-2 text-right">
-          <input type="number" step="0.01" value="${o.shipping_cost}" class="w-20 border rounded p-1 text-right"
+          <input type="number" step="0.01" value="${o.shipping_cost}" class="w-16 border rounded p-1 text-right"
             onchange="editOrder('${o.ebay_order_id}', 'shipping_cost', this.value)">
-          ${o.shipping_cost_is_estimated ? '<span class="text-xs text-yellow-600">est.</span>' : '<span class="text-xs text-green-600">actual</span>'}
+          ${o.shipping_cost_is_estimated ? '<span class="text-yellow-600">est.</span>' : '<span class="text-green-600">actual</span>'}
         </td>
-        <td class="p-2 text-right">${fmt(o.ebay_fee)}${o.ebay_fee_is_estimated ? '<span class="text-xs text-yellow-600"> est.</span>' : ""}</td>
+        <td class="p-2 text-right">${fmt(o.ebay_fee)}${o.ebay_fee_is_estimated ? '<span class="text-yellow-600"> est.</span>' : ""}</td>
         <td class="p-2 text-right">${fmt(o.age_verification_fee)}</td>
         <td class="p-2 text-right font-bold ${profitColor}">${fmt(o.profit)}</td>
+        <td class="p-2 text-center">
+          <input type="checkbox" ${o.refunded ? "checked" : ""} title="Mark refunded"
+            onchange="editOrder('${o.ebay_order_id}', 'refunded', this.checked)">
+        </td>
       </tr>`;
   });
   document.getElementById("total-profit").textContent = fmt(total);
 }
 
-async function syncOrders() {
-  const btn = event.target;
+async function syncOrders(ev) {
+  const btn = ev.target;
   btn.disabled = true; btn.textContent = "Importing...";
   try {
     const r = await (await fetch("/api/orders/sync", { method: "POST" })).json();
-    if (r.error) {
-      alert("Import failed:\n\n" + r.error);
-    } else {
-      alert("Imported " + (r.imported ?? 0) + " orders");
-    }
-  } catch (e) { alert("Error importing orders - check your internet connection and try again."); }
+    if (r.error) alert("Import failed:\n\n" + r.error);
+    else alert("Imported " + (r.imported ?? 0) + " orders");
+  } catch (e) { alert("Error importing orders - check your connection and try again."); }
   btn.disabled = false; btn.textContent = "Import Orders from eBay";
   loadOrders();
 }
@@ -77,19 +136,34 @@ async function editOrder(orderId, field, value) {
 
 // ---- inventory ----
 async function loadInventory() {
-  const items = await (await fetch("/api/inventory")).json();
-  const body = document.getElementById("inventory-body");
-  body.innerHTML = items.map(i => `
-    <tr class="border-b"><td class="p-2">${i.sku}</td><td class="p-2">${i.title || ""}</td><td class="p-2 text-right">${i.quantity}</td></tr>
-  `).join("");
+  ALL_INVENTORY = await (await fetch("/api/inventory")).json();
+  renderInventory();
 }
-async function syncInventory() {
-  const btn = event.target;
+function renderInventory() {
+  const q = (document.getElementById("inv-search").value || "").toLowerCase();
+  const body = document.getElementById("inventory-body");
+  const rows = ALL_INVENTORY.filter(i => !q || (i.sku + " " + (i.title || "")).toLowerCase().includes(q));
+  body.innerHTML = rows.map(i => {
+    const low = i.quantity <= LOW_STOCK;
+    return `<tr class="border-b ${low ? "bg-yellow-50" : ""}">
+      <td class="p-2">${i.sku}</td>
+      <td class="p-2">${i.title || ""}</td>
+      <td class="p-2 text-right font-medium ${low ? "text-red-700" : ""}">${i.quantity}${low ? " ⚠" : ""}</td>
+    </tr>`;
+  }).join("") || '<tr><td class="p-3 text-gray-400" colspan="3">No inventory yet - click Fetch Stock from eBay.</td></tr>';
+}
+function saveLowStock() {
+  LOW_STOCK = parseInt(document.getElementById("low-stock").value || "3");
+  renderInventory();
+}
+async function syncInventory(ev) {
+  const btn = ev.target;
   btn.disabled = true; btn.textContent = "Fetching...";
   try {
     const r = await (await fetch("/api/inventory/sync", { method: "POST" })).json();
-    alert("Synced " + (r.synced ?? 0) + " items");
-  } catch (e) { alert("Error fetching inventory - check Settings/connection."); }
+    if (r.error) alert("Fetch failed:\n\n" + r.error);
+    else alert("Synced " + (r.synced ?? 0) + " items");
+  } catch (e) { alert("Error fetching inventory."); }
   btn.disabled = false; btn.textContent = "Fetch Stock from eBay";
   loadInventory();
 }
@@ -100,10 +174,10 @@ async function loadMessagesTab() {
   document.getElementById("away-toggle").checked = s.away_mode;
   document.getElementById("away-message").value = s.away_message;
   const log = await (await fetch("/api/messages/log")).json();
-  document.getElementById("message-log").innerHTML = log.map(m => `
+  document.getElementById("message-log").innerHTML = log.length ? log.map(m => `
     <div class="p-2 rounded ${m.direction === 'out' ? 'bg-blue-50' : 'bg-gray-50'}">
       <b>${m.buyer_username || ''}</b> (${m.direction}${m.auto_generated ? ', auto' : ''}): ${m.message_text}
-    </div>`).join("");
+    </div>`).join("") : '<p class="text-gray-400">No messages logged yet.</p>';
 }
 async function toggleAway() {
   const checked = document.getElementById("away-toggle").checked;
@@ -158,7 +232,7 @@ async function loadRates() {
     <div class="flex justify-between items-center border-b py-1">
       <span>${r.carrier} - ${r.service_name}: ${fmt(r.default_cost)}</span>
       <button onclick="deleteRate(${r.id})" class="text-red-600 text-xs">remove</button>
-    </div>`).join("");
+    </div>`).join("") || '<p class="text-gray-400 text-xs">No fallback rates yet.</p>';
 }
 async function addRate() {
   const p = new URLSearchParams({
@@ -175,6 +249,7 @@ async function deleteRate(id) {
 }
 
 // ---- init ----
+showPage("dashboard");
 refreshStatus();
 loadOrders();
 loadInventory();
