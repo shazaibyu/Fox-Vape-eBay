@@ -27,29 +27,27 @@ def list_inventory(db: Session = Depends(get_db)):
 
 @router.post("/sync")
 def sync_inventory(db: Session = Depends(get_db)):
-    """Pulls current stock levels FROM eBay only. Nothing is ever written
-    back to eBay from this endpoint."""
-    remote_items = ebay_client.fetch_inventory()
+    """Pulls all ACTIVE LISTINGS from eBay (read-only - nothing is ever
+    written back). Uses the Trading API, which covers normally-listed items."""
+    try:
+        listings = ebay_client.fetch_active_listings()
+    except Exception as e:
+        return {"error": str(e)}
+
     updated = 0
-    for it in remote_items:
-        sku = it.get("sku")
-        if not sku:
-            continue
-        product = it.get("product", {})
-        qty = (it.get("availability", {})
-                 .get("shipToLocationAvailability", {})
-                 .get("quantity", 0))
-        price = None
-        # price often lives on the offer, not the inventory item - left as
-        # 0 here; can be enriched by also calling the Offers API per SKU.
-        row = db.query(InventoryItem).filter(InventoryItem.sku == sku).first()
+    for it in listings:
+        # key by SKU when present, otherwise by eBay item ID
+        key = it["sku"] or f"item-{it['item_id']}"
+        row = db.query(InventoryItem).filter(InventoryItem.sku == key).first()
         if not row:
-            row = InventoryItem(sku=sku)
+            row = InventoryItem(sku=key)
             db.add(row)
-        row.title = (product.get("title") or row.title or "")
-        row.quantity = qty
-        if product.get("imageUrls"):
-            row.image_url = product["imageUrls"][0]
+        row.ebay_item_id = it["item_id"]
+        row.title = it["title"] or row.title
+        row.quantity = it["quantity"]
+        row.price = it["price"]
+        if it["image_url"]:
+            row.image_url = it["image_url"]
         row.last_synced = datetime.datetime.utcnow()
         updated += 1
     db.commit()

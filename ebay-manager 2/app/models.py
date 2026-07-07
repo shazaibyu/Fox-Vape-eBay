@@ -87,6 +87,16 @@ class Order(Base):
     raw_json = Column(Text, nullable=True)          # full eBay payload for reference
 
 
+class ProductCost(Base):
+    """One unit cost per product - applied to every order of that product.
+    Keyed by SKU when the listing has one, otherwise by exact title."""
+    __tablename__ = "product_costs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    product_key = Column(String, unique=True, index=True)  # "sku:<sku>" or "title:<title>"
+    unit_cost = Column(Float, default=0.0)
+
+
 class ShippingRate(Base):
     """User-maintained fallback rates, used when the real label cost
     can't be pulled automatically for a given tracking number."""

@@ -16,6 +16,7 @@
     <nav class="flex-1 p-2 space-y-1">
       <button class="nav-btn w-full text-left px-3 py-2 rounded text-sm" data-page="dashboard">📊 Dashboard</button>
       <button class="nav-btn w-full text-left px-3 py-2 rounded text-sm" data-page="orders">🧾 Orders & Profit</button>
+      <button class="nav-btn w-full text-left px-3 py-2 rounded text-sm" data-page="products">🏷️ Products & Costs</button>
       <button class="nav-btn w-full text-left px-3 py-2 rounded text-sm" data-page="inventory">📦 Inventory</button>
       <button class="nav-btn w-full text-left px-3 py-2 rounded text-sm" data-page="messages">💬 Auto Messages</button>
       <button class="nav-btn w-full text-left px-3 py-2 rounded text-sm" data-page="settings">⚙️ Settings</button>
@@ -52,10 +53,17 @@
     <section id="page-orders" class="page hidden">
       <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
         <h1 class="text-xl font-bold">Orders & Profit</h1>
-        <div class="flex gap-2">
+        <div class="flex flex-wrap gap-2">
           <a href="/api/analytics/export.csv" class="bg-gray-700 text-white px-3 py-2 rounded text-sm">⬇ Export CSV</a>
-          <button onclick="syncOrders(event)" class="bg-blue-600 text-white px-3 py-2 rounded text-sm">Import Orders from eBay</button>
+          <button onclick="document.getElementById('csv-file').click()" class="bg-gray-700 text-white px-3 py-2 rounded text-sm">⬆ Import old orders (CSV)</button>
+          <input type="file" id="csv-file" accept=".csv" class="hidden" onchange="uploadCsv(this)">
+          <button onclick="syncFees(event)" class="bg-purple-600 text-white px-3 py-2 rounded text-sm">Sync eBay Fees</button>
+          <button id="sync-btn" onclick="startSync()" class="bg-blue-600 text-white px-3 py-2 rounded text-sm">Import Orders from eBay</button>
         </div>
+      </div>
+      <div id="sync-progress" class="hidden mb-3">
+        <div class="flex justify-between text-xs mb-1"><span id="sync-progress-text">Importing...</span><span id="sync-progress-pct"></span></div>
+        <div class="w-full bg-gray-200 rounded h-2"><div id="sync-progress-bar" class="bg-blue-600 h-2 rounded" style="width:0%"></div></div>
       </div>
       <div id="status-chips" class="flex flex-wrap gap-2 mb-3"></div>
       <div class="flex flex-wrap gap-2 mb-3">
@@ -87,6 +95,34 @@
             </tr>
           </thead>
           <tbody id="orders-body"></tbody>
+        </table>
+      </div>
+      <div class="flex items-center justify-between mt-3 text-sm">
+        <span id="page-info" class="text-gray-500"></span>
+        <div class="flex gap-2">
+          <button onclick="changePage(-1)" class="border rounded px-3 py-1 bg-white">← Prev</button>
+          <button onclick="changePage(1)" class="border rounded px-3 py-1 bg-white">Next →</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- PRODUCTS & COSTS -->
+    <section id="page-products" class="page hidden">
+      <h1 class="text-xl font-bold mb-2">Products & Costs</h1>
+      <p class="text-sm text-gray-600 mb-4">Set what YOU pay per unit for each product, once. It's applied to every order of that product (unit cost × quantity) and profit recalculates automatically — including future imports.</p>
+      <input id="prod-search" placeholder="Search products..." class="border rounded p-2 text-sm w-64 mb-3" oninput="renderProducts()">
+      <div class="overflow-x-auto bg-white rounded shadow">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-800 text-white">
+            <tr>
+              <th class="p-2 text-left">Product</th>
+              <th class="p-2 text-left">SKU</th>
+              <th class="p-2 text-right">Orders</th>
+              <th class="p-2 text-right">Units sold</th>
+              <th class="p-2 text-right">Your cost per unit</th>
+            </tr>
+          </thead>
+          <tbody id="products-body"></tbody>
         </table>
       </div>
     </section>

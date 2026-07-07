@@ -14,6 +14,7 @@ function showPage(page) {
   document.getElementById("page-" + page).classList.remove("hidden");
   document.querySelector(`.nav-btn[data-page="${page}"]`).classList.add("bg-blue-100", "text-blue-800", "font-medium");
   if (page === "dashboard") loadDashboard();
+  if (page === "products") loadProducts();
 }
  
 // ---- connection status ----
@@ -104,7 +105,13 @@ async function loadOrders() {
   renderOrders();
 }
 
-function renderOrders() {
+let PAGE = 1;
+const PAGE_SIZE = 100;
+
+function changePage(delta) { PAGE = Math.max(1, PAGE + delta); renderOrders(false); }
+
+function renderOrders(resetPage = true) {
+  if (resetPage) PAGE = 1;
   renderStatusChips();
   const q = (document.getElementById("order-search").value || "").toLowerCase();
   const filter = document.getElementById("order-filter").value;
@@ -118,11 +125,20 @@ function renderOrders() {
     return true;
   });
 
+  let total = 0;
+  rows.forEach(o => { if (!o.refunded) total += o.profit; });
+  document.getElementById("total-profit").textContent = fmt(total);
+
+  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  if (PAGE > totalPages) PAGE = totalPages;
+  const start = (PAGE - 1) * PAGE_SIZE;
+  const pageRows = rows.slice(start, start + PAGE_SIZE);
+  document.getElementById("page-info").textContent =
+    `Showing ${rows.length ? start + 1 : 0}-${start + pageRows.length} of ${rows.length} orders (page ${PAGE}/${totalPages})`;
+
   const body = document.getElementById("orders-body");
   body.innerHTML = "";
-  let total = 0;
-  rows.forEach(o => {
-    if (!o.refunded) total += o.profit;
+  pageRows.forEach(o => {
     const profitColor = o.profit >= 0 ? "text-green-700" : "text-red-700";
     const rowClass = o.refunded ? "opacity-50 bg-red-50" : "";
     const meta = STATUS_META[o.fulfillment_status] || STATUS_META.shipped;
@@ -158,19 +174,57 @@ function renderOrders() {
         </td>
       </tr>`;
   });
-  document.getElementById("total-profit").textContent = fmt(total);
 }
 
-async function syncOrders(ev) {
+// ---- background import with live progress ----
+async function startSync() {
+  const r = await (await fetch("/api/orders/sync", { method: "POST" })).json();
+  if (r.started === false) { alert(r.message); }
+  document.getElementById("sync-progress").classList.remove("hidden");
+  document.getElementById("sync-btn").disabled = true;
+  pollSync();
+}
+async function pollSync() {
+  const s = await (await fetch("/api/orders/sync/status")).json();
+  const pct = s.total ? Math.round((s.imported / s.total) * 100) : 0;
+  document.getElementById("sync-progress-bar").style.width = pct + "%";
+  document.getElementById("sync-progress-pct").textContent = pct + "%";
+  document.getElementById("sync-progress-text").textContent =
+    `Imported ${s.imported} of ${s.total || "?"} orders · ${fmt(s.revenue)} revenue so far`;
+  if (s.running) {
+    setTimeout(pollSync, 2000);
+  } else {
+    document.getElementById("sync-btn").disabled = false;
+    document.getElementById("sync-progress-text").textContent = s.error
+      ? ("Stopped: " + s.error + ` (${s.imported} orders saved)`)
+      : `Done - ${s.imported} orders, ${fmt(s.revenue)} revenue imported`;
+    loadOrders();
+    loadDashboard();
+  }
+}
+
+async function syncFees(ev) {
   const btn = ev.target;
-  btn.disabled = true; btn.textContent = "Importing...";
+  btn.disabled = true; btn.textContent = "Syncing fees...";
   try {
-    const r = await (await fetch("/api/orders/sync", { method: "POST" })).json();
-    if (r.error) alert("Import failed:\n\n" + r.error);
-    else alert("Imported " + (r.imported ?? 0) + " orders");
-  } catch (e) { alert("Error importing orders - check your connection and try again."); }
-  btn.disabled = false; btn.textContent = "Import Orders from eBay";
+    const r = await (await fetch("/api/orders/sync-fees", { method: "POST" })).json();
+    if (r.error) alert("Fee sync failed:\n\n" + r.error);
+    else alert(`Real eBay fees applied to ${r.orders_updated} orders (${r.fees_found} fee records found).`);
+  } catch (e) { alert("Fee sync error - try again."); }
+  btn.disabled = false; btn.textContent = "Sync eBay Fees";
   loadOrders();
+}
+
+async function uploadCsv(input) {
+  if (!input.files.length) return;
+  const fd = new FormData();
+  fd.append("file", input.files[0]);
+  const r = await (await fetch("/api/orders/import-csv", { method: "POST", body: fd })).json();
+  if (r.error) alert("CSV import failed:\n\n" + r.error);
+  else alert(`Imported ${r.imported} orders from CSV (${r.skipped} rows skipped).`);
+  input.value = "";
+  loadOrders();
+  loadDashboard();
 }
 
 async function editOrder(orderId, field, value) {
@@ -212,6 +266,38 @@ async function syncInventory(ev) {
   } catch (e) { alert("Error fetching inventory."); }
   btn.disabled = false; btn.textContent = "Fetch Stock from eBay";
   loadInventory();
+}
+
+// ---- products & costs ----
+let ALL_PRODUCTS = [];
+async function loadProducts() {
+  ALL_PRODUCTS = await (await fetch("/api/products")).json();
+  renderProducts();
+}
+function renderProducts() {
+  const q = (document.getElementById("prod-search").value || "").toLowerCase();
+  const rows = ALL_PRODUCTS.filter(p => !q || (p.title + " " + (p.sku || "")).toLowerCase().includes(q));
+  document.getElementById("products-body").innerHTML = rows.map(p => `
+    <tr class="border-b">
+      <td class="p-2 max-w-md truncate">${p.title}</td>
+      <td class="p-2 text-gray-400">${p.sku || "-"}</td>
+      <td class="p-2 text-right">${p.orders}</td>
+      <td class="p-2 text-right">${p.units}</td>
+      <td class="p-2 text-right">
+        £ <input type="number" step="0.01" value="${p.unit_cost}" class="w-20 border rounded p-1 text-right"
+          onchange="setProductCost('${encodeURIComponent(p.product_key)}', this.value, this)">
+      </td>
+    </tr>`).join("") || '<tr><td class="p-3 text-gray-400" colspan="5">No products yet - import orders first.</td></tr>';
+}
+async function setProductCost(encodedKey, value, el) {
+  el.disabled = true;
+  const r = await (await fetch(`/api/products/cost?key=${encodedKey}&unit_cost=${value}`, { method: "POST" })).json();
+  el.disabled = false;
+  if (r.ok) {
+    el.classList.add("bg-green-100");
+    setTimeout(() => el.classList.remove("bg-green-100"), 1500);
+    loadOrders();
+  } else alert("Couldn't save cost");
 }
 
 // ---- messages ----

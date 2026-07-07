@@ -7,7 +7,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from .database import init_db
 from .routers import (
     auth, inventory, orders, settings as settings_router,
-    messages, compliance, analytics,
+    messages, compliance, analytics, products,
 )
 from . import messaging, security
 
@@ -41,6 +41,7 @@ app.include_router(settings_router.router)
 app.include_router(messages.router)
 app.include_router(compliance.router)
 app.include_router(analytics.router)
+app.include_router(products.router)
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

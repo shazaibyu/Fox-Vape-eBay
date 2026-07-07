@@ -34,7 +34,11 @@ SCOPES = [
     "https://api.ebay.com/oauth/api_scope/sell.inventory",
     "https://api.ebay.com/oauth/api_scope/sell.fulfillment",
     "https://api.ebay.com/oauth/api_scope/sell.marketing",
+    "https://api.ebay.com/oauth/api_scope/sell.finances",
 ]
+
+FINANCE_BASE = "https://apiz.ebay.com"          # Finances API uses apiz, not api
+FINANCE_BASE_SANDBOX = "https://apiz.sandbox.ebay.com"
 
 _token_cache = {"access_token": None, "expires_at": None}
 
@@ -112,7 +116,8 @@ def get_access_token():
         data={
             "grant_type": "refresh_token",
             "refresh_token": s.ebay_refresh_token,
-            "scope": " ".join(SCOPES),
+            # no scope param: eBay grants whatever was originally consented,
+            # so tokens created before the finances scope was added keep working
         },
         timeout=TIMEOUT,
     )
@@ -189,6 +194,107 @@ def fetch_orders(order_ids=None, creation_date_from=None):
 
 TRADING_ENDPOINT = "https://api.ebay.com/ws/api.dll"
 TRADING_ENDPOINT_SANDBOX = "https://api.sandbox.ebay.com/ws/api.dll"
+
+
+def fetch_active_listings():
+    """Fetch ALL active listings via the Trading API (GetMyeBaySelling).
+    This works for normally-listed items - unlike the Inventory API, which
+    only returns items created through the Inventory API itself (which is
+    why inventory sync previously came back empty)."""
+    import xml.etree.ElementTree as ET
+    s = _settings()
+    endpoint = TRADING_ENDPOINT_SANDBOX if s.ebay_environment == "sandbox" else TRADING_ENDPOINT
+    token = get_access_token()
+    ns = {"e": "urn:ebay:apis:eBLBaseComponents"}
+
+    listings = []
+    page = 1
+    while True:
+        xml = f"""<?xml version="1.0" encoding="utf-8"?>
+<GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <RequesterCredentials><eBayAuthToken>{token}</eBayAuthToken></RequesterCredentials>
+  <ActiveList>
+    <Include>true</Include>
+    <Pagination>
+      <EntriesPerPage>200</EntriesPerPage>
+      <PageNumber>{page}</PageNumber>
+    </Pagination>
+  </ActiveList>
+  <DetailLevel>ReturnAll</DetailLevel>
+</GetMyeBaySellingRequest>"""
+        r = requests.post(endpoint, headers=_trading_headers("GetMyeBaySelling"), data=xml, timeout=30)
+        if not r.ok:
+            raise RuntimeError(f"eBay GetMyeBaySelling failed ({r.status_code}): {r.text[:300]}")
+        root = ET.fromstring(r.text)
+
+        ack = root.find("e:Ack", ns)
+        if ack is not None and ack.text not in ("Success", "Warning"):
+            err = root.find(".//e:Errors/e:LongMessage", ns)
+            raise RuntimeError(f"eBay listing fetch error: {err.text if err is not None else r.text[:300]}")
+
+        items = root.findall(".//e:ActiveList/e:ItemArray/e:Item", ns)
+        for it in items:
+            def g(path):
+                el = it.find(path, ns)
+                return el.text if el is not None else None
+            qty = g("e:QuantityAvailable") or g("e:Quantity") or "0"
+            listings.append({
+                "item_id": g("e:ItemID"),
+                "title": g("e:Title"),
+                "sku": g("e:SKU"),
+                "quantity": int(qty),
+                "price": float(g("e:SellingStatus/e:CurrentPrice") or 0),
+                "image_url": g("e:PictureDetails/e:GalleryURL"),
+            })
+
+        total_pages_el = root.find(".//e:ActiveList/e:PaginationResult/e:TotalNumberOfPages", ns)
+        total_pages = int(total_pages_el.text) if total_pages_el is not None else 1
+        if page >= total_pages or not items:
+            break
+        page += 1
+    return listings
+
+
+def fetch_order_fees():
+    """Fetch real per-order fees via the Finances API. Returns a dict of
+    orderId -> total fee amount. Requires the sell.finances permission -
+    if the current eBay connection was made before that scope was added,
+    this raises a clear error telling the user to reconnect."""
+    s = _settings()
+    base = FINANCE_BASE_SANDBOX if s.ebay_environment == "sandbox" else FINANCE_BASE
+    token = get_access_token()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    fees = {}
+    offset = 0
+    limit = 200
+    while True:
+        r = requests.get(
+            f"{base}/sell/finances/v1/transaction",
+            headers=headers,
+            params={"filter": "transactionType:{SALE}", "limit": limit, "offset": offset},
+            timeout=25,
+        )
+        if r.status_code in (401, 403):
+            raise RuntimeError(
+                "eBay hasn't granted fee access to this connection yet. "
+                "Go to Settings and click 'Connect to eBay' once more to approve "
+                "the new permission, then try again."
+            )
+        if not r.ok:
+            raise RuntimeError(f"eBay fee fetch failed ({r.status_code}): {r.text[:300]}")
+        data = r.json()
+        txns = data.get("transactions", [])
+        for t in txns:
+            oid = t.get("orderId")
+            fee = float(t.get("totalFeeAmount", {}).get("value", 0) or 0)
+            if oid:
+                fees[oid] = fees.get(oid, 0.0) + fee
+        total = data.get("total", 0)
+        offset += limit
+        if offset >= total or not txns:
+            break
+    return fees
 
 
 def _trading_headers(call_name):
