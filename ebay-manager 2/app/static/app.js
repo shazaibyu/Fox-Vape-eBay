@@ -107,12 +107,51 @@ async function loadOrders() {
 
 let PAGE = 1;
 const PAGE_SIZE = 100;
+let MONTH_FILTER = "all";
 
 function changePage(delta) { PAGE = Math.max(1, PAGE + delta); renderOrders(false); }
+
+function monthKey(iso) {
+  if (!iso) return null;
+  return iso.slice(0, 7); // "2026-07"
+}
+function monthLabel(key) {
+  const [y, m] = key.split("-");
+  const names = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  return names[parseInt(m) - 1] + " " + y;
+}
+function renderMonthChips() {
+  const months = {};
+  ALL_ORDERS.forEach(o => {
+    const k = monthKey(o.order_date);
+    if (k) months[k] = (months[k] || 0) + 1;
+  });
+  const keys = Object.keys(months).sort().reverse();
+  const container = document.getElementById("month-chips");
+  const chip = (key, label, count) => {
+    const active = MONTH_FILTER === key ? "bg-blue-600 text-white" : "bg-white border";
+    return `<button onclick="setMonthFilter('${key}')" class="px-3 py-1.5 rounded text-xs font-medium ${active}">${label}${count !== null ? ` (${count})` : ""}</button>`;
+  };
+  container.innerHTML = chip("all", "All months", null) +
+    keys.map(k => chip(k, monthLabel(k), months[k])).join("");
+}
+function setMonthFilter(m) { MONTH_FILTER = m; renderOrders(); }
+
+async function quickRefresh() {
+  const r = await (await fetch("/api/orders/sync?days=2", { method: "POST" })).json();
+  if (r.started === false) { alert(r.message); return; }
+  document.getElementById("sync-progress").classList.remove("hidden");
+  pollSync();
+}
+
+// auto-refresh data every 5 minutes (the server also auto-imports new
+// orders every 5 minutes in the background)
+setInterval(() => { loadOrders(); loadInventory(); }, 5 * 60 * 1000);
 
 function renderOrders(resetPage = true) {
   if (resetPage) PAGE = 1;
   renderStatusChips();
+  renderMonthChips();
   const q = (document.getElementById("order-search").value || "").toLowerCase();
   const filter = document.getElementById("order-filter").value;
   let rows = ALL_ORDERS.filter(o => {
@@ -122,6 +161,7 @@ function renderOrders(resetPage = true) {
     if (filter === "refunded" && !o.refunded) return false;
     if (filter === "estimated" && !o.shipping_cost_is_estimated) return false;
     if (STATUS_FILTER !== "all" && o.fulfillment_status !== STATUS_FILTER) return false;
+    if (MONTH_FILTER !== "all" && monthKey(o.order_date) !== MONTH_FILTER) return false;
     return true;
   });
 
@@ -246,23 +286,29 @@ function renderInventory() {
   body.innerHTML = rows.map(i => {
     const low = i.quantity <= LOW_STOCK;
     return `<tr class="border-b ${low ? "bg-yellow-50" : ""}">
-      <td class="p-2">${i.sku}</td>
+      <td class="p-2 text-gray-400">${i.sku}</td>
       <td class="p-2">${i.title || ""}</td>
-      <td class="p-2 text-right font-medium ${low ? "text-red-700" : ""}">${i.quantity}${low ? " ⚠" : ""}</td>
+      <td class="p-2 text-right">${i.price ? fmt(i.price) : "-"}</td>
+      <td class="p-2 text-right">
+        <input type="number" min="0" value="${i.quantity}" class="w-20 border rounded p-1 text-right font-medium ${low ? "text-red-700 border-red-300" : ""}"
+          onchange="setInvQty('${i.sku}', this.value)">${low ? " ⚠" : ""}
+      </td>
+      <td class="p-2 text-center"><button onclick="deleteInvItem('${i.sku}')" class="text-red-500 text-xs">✕</button></td>
     </tr>`;
-  }).join("") || '<tr><td class="p-3 text-gray-400" colspan="3">No inventory yet - click Fetch Stock from eBay.</td></tr>';
+  }).join("") || '<tr><td class="p-3 text-gray-400" colspan="5">No inventory yet - add products above or fetch from eBay.</td></tr>';
 }
 function saveLowStock() {
   LOW_STOCK = parseInt(document.getElementById("low-stock").value || "3");
   renderInventory();
 }
 async function syncInventory(ev) {
+  if (!confirm("Fetch from eBay OVERWRITES your manual stock quantities with eBay's numbers. Continue?")) return;
   const btn = ev.target;
   btn.disabled = true; btn.textContent = "Fetching...";
   try {
     const r = await (await fetch("/api/inventory/sync", { method: "POST" })).json();
     if (r.error) alert("Fetch failed:\n\n" + r.error);
-    else alert("Synced " + (r.synced ?? 0) + " items");
+    else alert("Synced " + (r.synced ?? 0) + " listings from eBay");
   } catch (e) { alert("Error fetching inventory."); }
   btn.disabled = false; btn.textContent = "Fetch Stock from eBay";
   loadInventory();
@@ -300,6 +346,72 @@ async function setProductCost(encodedKey, value, el) {
   } else alert("Couldn't save cost");
 }
 
+async function createGroup() {
+  const kw = document.getElementById("group-keyword").value.trim();
+  const cost = document.getElementById("group-cost").value;
+  if (!kw || cost === "") { alert("Enter a product name and unit cost"); return; }
+  const r = await (await fetch(`/api/products/group?keyword=${encodeURIComponent(kw)}&unit_cost=${cost}`, { method: "POST" })).json();
+  if (r.error) { alert(r.error); return; }
+  alert(`Group created - cost applied to ${r.orders_updated} orders.`);
+  document.getElementById("group-keyword").value = "";
+  document.getElementById("group-cost").value = "";
+  loadProducts();
+  loadOrders();
+}
+
+// ---- inventory management ----
+async function addInvItem() {
+  const title = document.getElementById("inv-add-title").value.trim();
+  const sku = document.getElementById("inv-add-sku").value.trim();
+  const qty = document.getElementById("inv-add-qty").value || 0;
+  if (!title) { alert("Enter a title"); return; }
+  const p = new URLSearchParams({ title, quantity: qty });
+  if (sku) p.set("sku", sku);
+  const r = await (await fetch(`/api/inventory/add?${p}`, { method: "POST" })).json();
+  if (r.error) { alert(r.error); return; }
+  document.getElementById("inv-add-title").value = "";
+  document.getElementById("inv-add-sku").value = "";
+  document.getElementById("inv-add-qty").value = "";
+  loadInventory();
+}
+async function setInvQty(sku, qty) {
+  await fetch(`/api/inventory/set-qty?sku=${encodeURIComponent(sku)}&quantity=${qty}`, { method: "POST" });
+  loadInventory();
+}
+async function deleteInvItem(sku) {
+  if (!confirm("Remove this item from inventory?")) return;
+  await fetch(`/api/inventory/item?sku=${encodeURIComponent(sku)}`, { method: "DELETE" });
+  loadInventory();
+}
+
+// ---- prefix rates ----
+async function loadPrefixRates() {
+  const rates = await (await fetch("/api/settings/prefix-rates")).json();
+  document.getElementById("prefix-rates-list").innerHTML = rates.map(r => `
+    <div class="flex justify-between items-center border-b py-1">
+      <span>Starts with <b>${r.prefix}</b> → ${fmt(r.cost)}</span>
+      <button onclick="deletePrefixRate(${r.id})" class="text-red-600 text-xs">remove</button>
+    </div>`).join("") || '<p class="text-gray-400 text-xs">No prefix rates.</p>';
+}
+async function addPrefixRate() {
+  const prefix = document.getElementById("pr-prefix").value.trim();
+  const cost = document.getElementById("pr-cost").value;
+  if (!prefix || cost === "") { alert("Enter prefix and cost"); return; }
+  await fetch(`/api/settings/prefix-rates?prefix=${encodeURIComponent(prefix)}&cost=${cost}`, { method: "POST" });
+  document.getElementById("pr-prefix").value = "";
+  document.getElementById("pr-cost").value = "";
+  loadPrefixRates();
+}
+async function deletePrefixRate(id) {
+  await fetch(`/api/settings/prefix-rates/${id}`, { method: "DELETE" });
+  loadPrefixRates();
+}
+async function reapplyShipping() {
+  const r = await (await fetch("/api/settings/reapply-shipping", { method: "POST" })).json();
+  alert(`Shipping rules re-applied to ${r.orders_updated} orders.`);
+  loadOrders();
+}
+
 // ---- messages ----
 async function loadMessagesTab() {
   const s = await (await fetch("/api/settings")).json();
@@ -334,6 +446,7 @@ async function loadSettingsTab() {
   document.getElementById("s-age-fee").value = s.age_verification_fee;
   document.getElementById("s-environment").value = s.ebay_environment;
   loadRates();
+  loadPrefixRates();
 }
 async function saveKeys() {
   const p = new URLSearchParams({

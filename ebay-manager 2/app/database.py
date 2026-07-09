@@ -35,6 +35,7 @@ def init_db():
         "ALTER TABLE orders ADD COLUMN ship_by_date TIMESTAMP",
         "ALTER TABLE orders ADD COLUMN shipped_date TIMESTAMP",
         "ALTER TABLE orders ADD COLUMN max_delivery_date TIMESTAMP",
+        "ALTER TABLE orders ADD COLUMN stock_deducted BOOLEAN DEFAULT FALSE",
     ]
     with engine.connect() as conn:
         for stmt in migrations:
@@ -43,12 +44,18 @@ def init_db():
                 conn.commit()
             except Exception:
                 conn.rollback()  # column already exists - fine
-    # ensure a single settings row always exists
+    # ensure a single settings row always exists, and seed default
+    # tracking-prefix shipping rates (F/Y/H) if none are configured yet
+    from .models import TrackingPrefixRate
     db = SessionLocal()
     try:
         if not db.query(Settings).first():
             db.add(Settings(id=1))
-            db.commit()
+        if not db.query(TrackingPrefixRate).first():
+            db.add(TrackingPrefixRate(prefix="F", cost=3.50))
+            db.add(TrackingPrefixRate(prefix="Y", cost=2.44))
+            db.add(TrackingPrefixRate(prefix="H", cost=3.10))
+        db.commit()
     finally:
         db.close()
 

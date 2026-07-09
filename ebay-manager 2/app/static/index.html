@@ -58,9 +58,11 @@
           <button onclick="document.getElementById('csv-file').click()" class="bg-gray-700 text-white px-3 py-2 rounded text-sm">⬆ Import old orders (CSV)</button>
           <input type="file" id="csv-file" accept=".csv" class="hidden" onchange="uploadCsv(this)">
           <button onclick="syncFees(event)" class="bg-purple-600 text-white px-3 py-2 rounded text-sm">Sync eBay Fees</button>
-          <button id="sync-btn" onclick="startSync()" class="bg-blue-600 text-white px-3 py-2 rounded text-sm">Import Orders from eBay</button>
+          <button onclick="quickRefresh()" class="bg-green-600 text-white px-3 py-2 rounded text-sm">⟳ Refresh new orders</button>
+          <button id="sync-btn" onclick="startSync()" class="bg-blue-600 text-white px-3 py-2 rounded text-sm">Full import (90 days)</button>
         </div>
       </div>
+      <div id="month-chips" class="flex flex-wrap gap-2 mb-2"></div>
       <div id="sync-progress" class="hidden mb-3">
         <div class="flex justify-between text-xs mb-1"><span id="sync-progress-text">Importing...</span><span id="sync-progress-pct"></span></div>
         <div class="w-full bg-gray-200 rounded h-2"><div id="sync-progress-bar" class="bg-blue-600 h-2 rounded" style="width:0%"></div></div>
@@ -109,7 +111,16 @@
     <!-- PRODUCTS & COSTS -->
     <section id="page-products" class="page hidden">
       <h1 class="text-xl font-bold mb-2">Products & Costs</h1>
-      <p class="text-sm text-gray-600 mb-4">Set what YOU pay per unit for each product, once. It's applied to every order of that product (unit cost × quantity) and profit recalculates automatically — including future imports.</p>
+      <p class="text-sm text-gray-600 mb-4">Set what YOU pay per unit for each product, once. All flavours of the same product share one cost — create a product group below (e.g. "bar juice 5000") and every flavour collapses into one row.</p>
+      <div class="bg-white rounded shadow p-4 mb-4 max-w-2xl">
+        <h3 class="font-medium mb-2 text-sm">Create product group (combines all flavours)</h3>
+        <div class="flex flex-wrap gap-2">
+          <input id="group-keyword" placeholder='Product name, e.g. "bar juice 5000"' class="border rounded p-2 text-sm flex-1 min-w-48">
+          <input id="group-cost" type="number" step="0.01" placeholder="Unit cost £" class="border rounded p-2 text-sm w-28">
+          <button onclick="createGroup()" class="bg-blue-600 text-white px-3 py-2 rounded text-sm">Create & apply</button>
+        </div>
+        <p class="text-xs text-gray-500 mt-2">Any order whose title contains the product name joins the group. e.g. "bar juice 5000" matches every flavour of BAR JUICE 5000.</p>
+      </div>
       <input id="prod-search" placeholder="Search products..." class="border rounded p-2 text-sm w-64 mb-3" oninput="renderProducts()">
       <div class="overflow-x-auto bg-white rounded shadow">
         <table class="w-full text-sm">
@@ -133,7 +144,16 @@
         <h1 class="text-xl font-bold">Inventory</h1>
         <button onclick="syncInventory(event)" class="bg-blue-600 text-white px-3 py-2 rounded text-sm">Fetch Stock from eBay</button>
       </div>
-      <p class="text-xs text-gray-500 mb-3">Read-only view - stock is never pushed back to eBay from here. Items at or below the low-stock threshold are highlighted.</p>
+      <p class="text-xs text-gray-500 mb-3">Your manual stock is the source of truth: add products/flavours below, and stock deducts automatically when new orders import. "Fetch from eBay" is optional and OVERWRITES quantities with eBay's numbers.</p>
+      <div class="bg-white rounded shadow p-4 mb-4 max-w-2xl">
+        <h3 class="font-medium mb-2 text-sm">Add product / flavour</h3>
+        <div class="flex flex-wrap gap-2">
+          <input id="inv-add-title" placeholder="Title, e.g. BAR JUICE 5000 - Blue Razz" class="border rounded p-2 text-sm flex-1 min-w-48">
+          <input id="inv-add-sku" placeholder="SKU (optional)" class="border rounded p-2 text-sm w-32">
+          <input id="inv-add-qty" type="number" placeholder="Qty" class="border rounded p-2 text-sm w-20">
+          <button onclick="addInvItem()" class="bg-blue-600 text-white px-3 py-2 rounded text-sm">Add</button>
+        </div>
+      </div>
       <div class="flex gap-2 mb-3">
         <input id="inv-search" placeholder="Search SKU or title..." class="border rounded p-2 text-sm w-64" oninput="renderInventory()">
         <label class="text-sm py-2">Low stock at ≤ <input id="low-stock" type="number" value="3" min="0" class="border rounded p-1 w-14 text-sm" onchange="saveLowStock()"></label>
@@ -141,7 +161,7 @@
       <div class="overflow-x-auto bg-white rounded shadow">
         <table class="w-full text-sm">
           <thead class="bg-gray-800 text-white">
-            <tr><th class="p-2 text-left">SKU</th><th class="p-2 text-left">Title</th><th class="p-2 text-right">Qty</th></tr>
+            <tr><th class="p-2 text-left">SKU</th><th class="p-2 text-left">Title</th><th class="p-2 text-right">Price</th><th class="p-2 text-right">Stock</th><th class="p-2"></th></tr>
           </thead>
           <tbody id="inventory-body"></tbody>
         </table>
@@ -193,6 +213,18 @@
         <label class="block text-sm mb-1">Age verification fee per order</label>
         <input id="s-age-fee" type="number" step="0.01" class="w-full border rounded p-2 mb-2 text-sm">
         <button onclick="saveFeeSettings()" class="bg-blue-600 text-white px-3 py-1.5 rounded text-sm">Save</button>
+      </div>
+
+      <div class="bg-white rounded shadow p-4 mb-4 max-w-xl">
+        <h3 class="font-medium mb-3">Tracking Prefix Shipping Rates</h3>
+        <p class="text-xs text-gray-500 mb-2">Your known rates by tracking-number prefix (applied as ACTUAL cost). Defaults: F=£3.50, Y=£2.44, H=£3.10.</p>
+        <div id="prefix-rates-list" class="text-sm space-y-1 mb-3"></div>
+        <div class="flex gap-2">
+          <input id="pr-prefix" placeholder="Prefix (e.g. F)" class="border rounded p-2 text-sm w-1/3">
+          <input id="pr-cost" type="number" step="0.01" placeholder="Cost £" class="border rounded p-2 text-sm w-1/3">
+          <button onclick="addPrefixRate()" class="bg-blue-600 text-white px-3 py-1.5 rounded text-sm">Add / Update</button>
+        </div>
+        <button onclick="reapplyShipping()" class="mt-3 bg-gray-700 text-white px-3 py-1.5 rounded text-sm">Re-apply shipping rules to all orders</button>
       </div>
 
       <div class="bg-white rounded shadow p-4 max-w-xl">

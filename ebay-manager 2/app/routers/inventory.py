@@ -25,6 +25,37 @@ def list_inventory(db: Session = Depends(get_db)):
     ]
 
 
+@router.post("/add")
+def add_item(title: str, quantity: int = 0, sku: str = None, db: Session = Depends(get_db)):
+    """Manually add a product/flavour to inventory. Stock deducts
+    automatically when new orders for it import."""
+    key = sku or f"manual-{abs(hash(title)) % 100000}"
+    existing = db.query(InventoryItem).filter(InventoryItem.sku == key).first()
+    if existing:
+        return {"error": "An item with that SKU already exists"}
+    db.add(InventoryItem(sku=key, title=title, quantity=quantity,
+                         last_synced=datetime.datetime.utcnow()))
+    db.commit()
+    return {"ok": True, "sku": key}
+
+
+@router.post("/set-qty")
+def set_qty(sku: str, quantity: int, db: Session = Depends(get_db)):
+    row = db.query(InventoryItem).filter(InventoryItem.sku == sku).first()
+    if not row:
+        return {"error": "not found"}
+    row.quantity = max(0, quantity)
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/item")
+def delete_item(sku: str, db: Session = Depends(get_db)):
+    db.query(InventoryItem).filter(InventoryItem.sku == sku).delete()
+    db.commit()
+    return {"ok": True}
+
+
 @router.post("/sync")
 def sync_inventory(db: Session = Depends(get_db)):
     """Pulls all ACTIVE LISTINGS from eBay (read-only - nothing is ever

@@ -45,12 +45,16 @@ def detect_carrier(tracking_number: str):
 
 def resolve_shipping_cost(tracking_number: str, real_label_cost: float = None):
     """
-    real_label_cost: pass this in if you already have the actual cost from
-    a connected label/courier account for this shipment. If given, it's
-    always trusted over the fallback table.
+    Priority order:
+    1. real_label_cost if provided (always trusted)
+    2. Tracking-prefix rules (e.g. F=3.50, Y=2.44, H=3.10) - these are the
+       seller's own known rates, so they count as ACTUAL, not estimated
+    3. Carrier fallback rate table (estimated)
+    4. 0.00 flagged estimated, so it's obvious rather than silently wrong
 
     Returns: (carrier, cost, is_estimated)
     """
+    from .models import TrackingPrefixRate
     carrier, service = detect_carrier(tracking_number)
 
     if real_label_cost is not None:
@@ -58,6 +62,19 @@ def resolve_shipping_cost(tracking_number: str, real_label_cost: float = None):
 
     db = SessionLocal()
     try:
+        if tracking_number:
+            cleaned = tracking_number.strip().upper()
+            # longest matching prefix wins
+            rules = db.query(TrackingPrefixRate).all()
+            best = None
+            for rule in rules:
+                p = (rule.prefix or "").strip().upper()
+                if p and cleaned.startswith(p):
+                    if best is None or len(p) > len(best.prefix):
+                        best = rule
+            if best:
+                return carrier, round(best.cost, 2), False
+
         rate = (
             db.query(ShippingRate)
             .filter(ShippingRate.carrier == carrier)
@@ -65,7 +82,6 @@ def resolve_shipping_cost(tracking_number: str, real_label_cost: float = None):
             .first()
         )
         if not rate:
-            # try carrier-only match if exact service isn't configured
             rate = db.query(ShippingRate).filter(ShippingRate.carrier == carrier).first()
         if rate:
             return carrier, round(rate.default_cost, 2), True

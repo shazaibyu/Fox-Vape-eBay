@@ -81,6 +81,7 @@ class Order(Base):
     age_verification_fee = Column(Float, default=0.54)
 
     refunded = Column(Boolean, default=False)
+    stock_deducted = Column(Boolean, default=False)
 
     profit = Column(Float, default=0.0)
 
@@ -89,12 +90,24 @@ class Order(Base):
 
 class ProductCost(Base):
     """One unit cost per product - applied to every order of that product.
-    Keyed by SKU when the listing has one, otherwise by exact title."""
+    Keys: "kw:<keyword>" groups all titles containing the keyword (e.g. all
+    flavours of "bar juice 5000"), or "title:<title>" for exact-title groups."""
     __tablename__ = "product_costs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    product_key = Column(String, unique=True, index=True)  # "sku:<sku>" or "title:<title>"
+    product_key = Column(String, unique=True, index=True)
     unit_cost = Column(Float, default=0.0)
+
+
+class TrackingPrefixRate(Base):
+    """Shipping cost by tracking-number prefix - e.g. tracking numbers
+    starting with F cost 3.50, Y cost 2.44, H cost 3.10. These are the
+    seller's real known rates, so they're applied as ACTUAL, not estimated."""
+    __tablename__ = "tracking_prefix_rates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    prefix = Column(String, unique=True, index=True)
+    cost = Column(Float, default=0.0)
 
 
 class ShippingRate(Base):

@@ -54,4 +54,8 @@ def root():
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(messaging.check_and_autoreply, "interval", minutes=5)
+# Auto-import new/changed orders every 5 minutes (quick incremental sync,
+# only looks at the last 2 days, so it's fast and new orders appear on
+# their own - stock deduction happens automatically as they arrive)
+scheduler.add_job(orders.auto_refresh_orders, "interval", minutes=5)
 scheduler.start()

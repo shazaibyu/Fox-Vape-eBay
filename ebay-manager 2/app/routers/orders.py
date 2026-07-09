@@ -7,7 +7,7 @@ import requests
 from fastapi import APIRouter, Depends, UploadFile, File
 from sqlalchemy.orm import Session
 from ..database import get_db, SessionLocal
-from ..models import Order, Settings, ProductCost
+from ..models import Order, Settings, ProductCost, InventoryItem
 from .. import ebay_client
 from ..shipping import resolve_shipping_cost
 from ..profit import calculate_ebay_fee, calculate_profit
@@ -120,8 +120,10 @@ def list_orders(db: Session = Depends(get_db)):
     ]
 
 
-def _run_sync():
-    """The actual import, run in a background thread with its own DB session."""
+def _run_sync(days=None):
+    """The actual import, run in a background thread with its own DB session.
+    days=None means full 90-day import; days=N fetches only orders modified
+    in the last N days (used by the 5-minute auto-refresh - much faster)."""
     db = SessionLocal()
     try:
         settings = db.query(Settings).first()
@@ -129,15 +131,24 @@ def _run_sync():
                     else "https://api.ebay.com")
         token = ebay_client.get_access_token()
         headers = {"Authorization": f"Bearer {token}"}
-        product_costs = {c.product_key: c.unit_cost for c in db.query(ProductCost).all()}
+        cost_rows = db.query(ProductCost).all()
+        product_costs = {c.product_key: c.unit_cost for c in cost_rows}
+        kw_list = [c.product_key[3:] for c in cost_rows if c.product_key.startswith("kw:")]
+
+        params_base = {}
+        if days:
+            since = (datetime.datetime.utcnow() - datetime.timedelta(days=days)).strftime(
+                "%Y-%m-%dT%H:%M:%S.000Z")
+            params_base["filter"] = f"lastmodifieddate:[{since}..]"
 
         offset, limit = 0, 200
         cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=TRACKING_LOOKUP_DAYS)
 
         while True:
+            params = dict(params_base, limit=limit, offset=offset)
             r = requests.get(
                 f"{base_url}/sell/fulfillment/v1/order",
-                headers=headers, params={"limit": limit, "offset": offset}, timeout=25,
+                headers=headers, params=params, timeout=25,
             )
             if not r.ok:
                 SYNC_STATE["error"] = f"eBay fetch failed at {offset} ({r.status_code}): {r.text[:200]}"
@@ -153,7 +164,8 @@ def _run_sync():
                 if not oid:
                     continue
                 row = db.query(Order).filter(Order.ebay_order_id == oid).first()
-                if not row:
+                is_new = row is None
+                if is_new:
                     row = Order(ebay_order_id=oid, item_cost=0.0)
                     db.add(row)
 
@@ -199,9 +211,28 @@ def _run_sync():
 
                 # apply saved product unit cost if no cost set yet
                 if not row.item_cost:
-                    key = _product_key(row.sku, row.item_title)
-                    if key in product_costs:
-                        row.item_cost = round(product_costs[key] * (row.quantity or 1), 2)
+                    t = (row.item_title or "").lower()
+                    matched_key = None
+                    for kw in kw_list:
+                        if kw in t:
+                            matched_key = f"kw:{kw}"
+                            break
+                    if not matched_key:
+                        matched_key = f"title:{row.item_title or '(unknown)'}"
+                    if matched_key in product_costs:
+                        row.item_cost = round(product_costs[matched_key] * (row.quantity or 1), 2)
+
+                # deduct stock for NEW orders (once, ever): match inventory
+                # by SKU first, then exact title
+                if is_new and not row.stock_deducted:
+                    inv = None
+                    if row.sku:
+                        inv = db.query(InventoryItem).filter(InventoryItem.sku == row.sku).first()
+                    if not inv and row.item_title:
+                        inv = db.query(InventoryItem).filter(InventoryItem.title == row.item_title).first()
+                    if inv:
+                        inv.quantity = max(0, (inv.quantity or 0) - (row.quantity or 1))
+                    row.stock_deducted = True
 
                 _recalc(row, settings)
                 SYNC_STATE["imported"] += 1
@@ -221,15 +252,32 @@ def _run_sync():
 
 
 @router.post("/sync")
-def sync_orders():
+def sync_orders(days: int = None):
     """Kick off the import in the background and return immediately.
-    The page stays responsive and polls /sync/status for progress."""
+    days=2 gives a fast 'refresh recent orders only' sync; no days = full."""
     if SYNC_STATE["running"]:
         return {"started": False, "message": "Import already running"}
     SYNC_STATE.update({"running": True, "imported": 0, "total": 0,
                        "revenue": 0.0, "error": None, "finished_at": None})
-    threading.Thread(target=_run_sync, daemon=True).start()
+    threading.Thread(target=_run_sync, kwargs={"days": days}, daemon=True).start()
     return {"started": True}
+
+
+def auto_refresh_orders():
+    """Called by the scheduler every 5 minutes: quietly imports any orders
+    created/changed in the last 2 days, so new orders appear on their own."""
+    if SYNC_STATE["running"]:
+        return
+    db = SessionLocal()
+    try:
+        s = db.query(Settings).first()
+        if not s or not s.ebay_refresh_token:
+            return  # not connected yet
+    finally:
+        db.close()
+    SYNC_STATE.update({"running": True, "imported": 0, "total": 0,
+                       "revenue": 0.0, "error": None, "finished_at": None})
+    _run_sync(days=2)
 
 
 @router.get("/sync/status")

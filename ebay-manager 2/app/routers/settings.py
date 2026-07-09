@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from ..database import get_db
-from ..models import Settings, ShippingRate
+from ..models import Settings, ShippingRate, TrackingPrefixRate
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -37,6 +37,57 @@ def update_settings(ebay_fee_percent: float = None, ebay_fee_fixed: float = None
         s.away_message = away_message
     db.commit()
     return {"ok": True}
+
+
+@router.get("/prefix-rates")
+def list_prefix_rates(db: Session = Depends(get_db)):
+    rates = db.query(TrackingPrefixRate).all()
+    return [{"id": r.id, "prefix": r.prefix, "cost": r.cost} for r in rates]
+
+
+@router.post("/prefix-rates")
+def add_prefix_rate(prefix: str, cost: float, db: Session = Depends(get_db)):
+    prefix = prefix.strip().upper()
+    if not prefix:
+        return {"error": "Prefix can't be empty"}
+    row = db.query(TrackingPrefixRate).filter(TrackingPrefixRate.prefix == prefix).first()
+    if not row:
+        row = TrackingPrefixRate(prefix=prefix)
+        db.add(row)
+    row.cost = cost
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/prefix-rates/{rate_id}")
+def delete_prefix_rate(rate_id: int, db: Session = Depends(get_db)):
+    db.query(TrackingPrefixRate).filter(TrackingPrefixRate.id == rate_id).delete()
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/reapply-shipping")
+def reapply_shipping(db: Session = Depends(get_db)):
+    """Re-run shipping cost rules (prefix rates + fallback table) across all
+    orders that have tracking and whose cost is still estimated or zero."""
+    from ..shipping import resolve_shipping_cost
+    from ..models import Order
+    from ..profit import calculate_profit
+    settings = db.query(Settings).first()
+    updated = 0
+    for o in db.query(Order).filter(Order.tracking_number != None).all():  # noqa: E711
+        if o.shipping_cost_is_estimated or not o.shipping_cost:
+            carrier, cost, estimated = resolve_shipping_cost(o.tracking_number)
+            o.carrier = carrier or o.carrier
+            o.shipping_cost = cost
+            o.shipping_cost_is_estimated = estimated
+            o.profit = calculate_profit(
+                o.sale_price, o.shipping_charged, o.item_cost,
+                o.shipping_cost, o.ebay_fee, o.age_verification_fee,
+            )
+            updated += 1
+    db.commit()
+    return {"ok": True, "orders_updated": updated}
 
 
 @router.get("/shipping-rates")
